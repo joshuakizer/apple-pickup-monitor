@@ -14,6 +14,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ENDPOINT = "https://www.apple.com/shop/retail/pickup-message"
@@ -50,6 +51,8 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+STATE_FILE = Path(os.getenv("STATE_FILE", ".state/inventory.json"))
+STATE_TTL_HOURS = int(os.getenv("STATE_TTL_HOURS", "24"))
 # Alert once if there has been no successful check for this long (transient errors stay silent).
 FAIL_ALERT_MINUTES = int(os.getenv("FAIL_ALERT_MINUTES", "10"))
 # Minimum gap between two failure alerts, so a flapping outage doesn't spam.
@@ -113,6 +116,7 @@ def check():
     available = {}
     seen_stores = set()
     for location in LOCATIONS:
+        location_parts = set()
         for store in fetch_location(location):
             number = store["storeNumber"]
             if watched is not None and number not in watched:
@@ -120,9 +124,22 @@ def check():
             seen_stores.add(number)
             postal_code = (store.get("address") or {}).get("postalCode")
             label = f"{store['storeName']} ({postal_code})" if postal_code else store["storeName"]
-            for part, info in (store.get("partsAvailability") or {}).items():
-                if part in PARTS and info.get("pickupDisplay") == "available":
+            parts_availability = store.get("partsAvailability")
+            if not isinstance(parts_availability, dict):
+                raise RuntimeError(f"store {number} has malformed partsAvailability")
+            for part, info in parts_availability.items():
+                if part not in PARTS:
+                    continue
+                if not isinstance(info, dict) or info.get("pickupDisplay") not in {"available", "unavailable"}:
+                    raise RuntimeError(f"store {number} has unverifiable availability for {part}")
+                location_parts.add(part)
+                if info["pickupDisplay"] == "available":
                     available[(number, part)] = label
+        missing_parts = set(PARTS) - location_parts
+        if missing_parts:
+            raise RuntimeError(
+                f"Apple response for {location} omitted product availability for {sorted(missing_parts)}"
+            )
     # A 200 response with missing stores would silently hide stock, so treat it as a failure.
     if watched is not None:
         missing = watched - seen_stores
@@ -154,16 +171,21 @@ def send_ntfy(title, message, click=None, priority="high", links=None):
         resp.read()
 
 
-def notify(title, message, click=None, priority="high", links=None):
+def notify(title, message, click=None, priority="high", links=None, strict=False):
     """links: list of (label, url) shown as buttons in ntfy (max 3) and as lines in Telegram."""
     links = links or []
     log(f"NOTIFY {title}: {message}")
+    attempted = 0
+    errors = []
     if NTFY_TOPIC:
+        attempted += 1
         try:
             send_ntfy(title, message, click=click, priority=priority, links=links)
         except Exception as exc:
             log(f"ntfy failed: {exc}")
+            errors.append(f"ntfy: {exc}")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        attempted += 1
         text = f"{title}\n{message}"
         text += "".join(f"\n{label}: {url}" for label, url in links) if links else (f"\n{click}" if click else "")
         body = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
@@ -174,6 +196,11 @@ def notify(title, message, click=None, priority="high", links=None):
             urllib.request.urlopen(req, timeout=15).read()
         except Exception as exc:
             log(f"telegram failed: {exc}")
+            errors.append(f"telegram: {exc}")
+    if strict and (attempted == 0 or len(errors) == attempted):
+        detail = "; ".join(errors) if errors else "no notification channel configured"
+        raise RuntimeError(f"notification failed: {detail}")
+    return attempted > len(errors)
 
 
 def format_items(items):
@@ -222,7 +249,81 @@ def current_interval():
     return INTERVAL if ACTIVE_START <= hour < ACTIVE_END else NIGHT_INTERVAL
 
 
+def load_inventory_state(path=None, now=None):
+    """Return the previous availability map, or None for missing/invalid/expired state."""
+    path = STATE_FILE if path is None else path
+    now = time.time() if now is None else now
+    try:
+        data = json.loads(path.read_text())
+        if data.get("version") != 1:
+            raise ValueError("unsupported version")
+        updated_at = float(data["updated_at"])
+        age = now - updated_at
+        if age < -300 or age > STATE_TTL_HOURS * 3600:
+            log(f"inventory state expired or has an invalid timestamp (age={int(age)}s)")
+            return None
+        previous = {}
+        for item in data["available"]:
+            number, part, label = item["store_number"], item["part"], item["label"]
+            if part not in PARTS or not all(isinstance(value, str) for value in (number, part, label)):
+                raise ValueError("invalid availability item")
+            previous[(number, part)] = label
+        return previous
+    except FileNotFoundError:
+        log(f"no inventory state at {path}; establishing a baseline")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, UnicodeError) as exc:
+        log(f"invalid inventory state at {path}: {exc}; establishing a baseline")
+    return None
+
+
+def save_inventory_state(current, path=None, now=None):
+    """Atomically persist a successful inventory snapshot."""
+    path = STATE_FILE if path is None else path
+    now = time.time() if now is None else now
+    data = {
+        "version": 1,
+        "updated_at": now,
+        "available": [
+            {"store_number": number, "part": part, "label": label}
+            for (number, part), label in sorted(current.items())
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def run_once():
+    """Run one verified check and persist state for scheduled invocations."""
+    current, seen_stores = check()
+    previous = load_inventory_state()
+    if previous is None:
+        new = {}
+        log(f"baseline stores={len(seen_stores)} available={len(current)}")
+    else:
+        new = {key: label for key, label in current.items() if key not in previous}
+        log(f"ok stores={len(seen_stores)} available={len(current)} new={len(new)}")
+
+    if new:
+        links = buy_links(new)
+        notify(
+            "iPhone Duo available for pickup",
+            format_any(new),
+            click=links[0][1],
+            priority="urgent",
+            links=links,
+            strict=True,
+        )
+    elif previous is not None:
+        log("one-shot check complete: no newly available configurations")
+
+    save_inventory_state(current)
+
+
 def run(once=False):
+    if once:
+        return run_once()
     if not (NTFY_TOPIC or (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)):
         log("WARNING: no NTFY_TOPIC or TELEGRAM_* configured, alerts only go to the log")
     if PROXY_URL:
@@ -268,17 +369,9 @@ def run(once=False):
             stock_alert_times = [t for t in stock_alert_times if now - t < window]
 
             if first:
-                if once:
-                    if current:
-                        links = buy_links(current)
-                        notify("iPhone Duo available for pickup", format_any(current),
-                               click=links[0][1], priority="urgent", links=links)
-                    else:
-                        log("one-shot check complete: nothing available right now")
-                else:
-                    summary = format_any(current) if current else "Nothing available right now."
-                    notify("iPhone Duo monitor started", summary, priority="low", links=buy_links(current))
-                    in_wave = len(current) >= WAVE_START_ITEMS
+                summary = format_any(current) if current else "Nothing available right now."
+                notify("iPhone Duo monitor started", summary, priority="low", links=buy_links(current))
+                in_wave = len(current) >= WAVE_START_ITEMS
             elif in_wave:
                 if len(current) <= WAVE_END_ITEMS:
                     in_wave = False
@@ -321,8 +414,6 @@ def run(once=False):
                 outage_alerted = True
                 last_fail_alert = time.monotonic()
 
-        if once:
-            return
         interval = current_interval()
         time.sleep(max(1, interval + random.uniform(-0.15, 0.15) * interval))
 
@@ -339,8 +430,18 @@ def test_notification():
     log("ntfy test notification delivered successfully")
 
 
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        if "--test-notification" in argv:
+            test_notification()
+        else:
+            run(once="--once" in argv)
+    except Exception as exc:
+        log(f"fatal: {exc}")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    if "--test-notification" in sys.argv:
-        test_notification()
-    else:
-        run(once="--once" in sys.argv)
+    sys.exit(main())

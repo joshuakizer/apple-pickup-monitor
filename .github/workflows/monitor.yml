@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: apple-inventory-monitor
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check-stock:
@@ -32,6 +32,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Restore inventory state
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_notification != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .state/inventory.json
+          key: apple-inventory-state-${{ github.run_id }}
+          restore-keys: |
+            apple-inventory-state-
+
       - name: Check Apple inventory
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_notification != true }}
         env:
@@ -42,6 +51,13 @@ jobs:
           CAPACITIES: "ALL"
           STORE_TZ: "America/New_York"
         run: python3 monitor.py --once
+
+      - name: Save inventory state
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.test_notification != true) }}
+        uses: actions/cache/save@v4
+        with:
+          path: .state/inventory.json
+          key: apple-inventory-state-${{ github.run_id }}
 
       - name: Verify ntfy delivery
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification == true }}

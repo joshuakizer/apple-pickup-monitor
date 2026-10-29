@@ -78,8 +78,13 @@ To verify delivery, open **Actions → Apple Inventory Monitor → Run workflow*
 **Send a test ntfy notification instead of checking inventory**, and run it. A successful run
 confirms that the saved topic and ntfy delivery path work without printing the topic value.
 
-Scheduled one-shot runs stay silent when nothing is available. When stock is available, each
-run sends an alert; this favors reliability because separate Actions runs do not share state.
+Scheduled runs restore the latest inventory snapshot from the Actions cache and alert only for
+new `(store, configuration)` pairs. A successful out-of-stock check removes a pair so a later
+restock can alert again. Failed checks exit nonzero and do not replace the last good snapshot.
+
+Missing, malformed, or older-than-24-hours state establishes a silent baseline. This prevents a
+cache loss from resending every currently available item, but it also means stock already present
+during that baseline run will not alert until it first goes out of stock and later returns.
 
 ## Deploy to Fly.io
 
@@ -117,6 +122,8 @@ All settings are environment variables.
 | `CAPACITIES` | `ALL` | e.g. `256gb,512gb` |
 | `LOCATIONS` | `33579` | ZIP codes to query |
 | `STORES` | `ALL` | comma-separated store numbers, or `ALL` for every store returned |
+| `STATE_FILE` | `.state/inventory.json` | persisted snapshot used by `--once` runs |
+| `STATE_TTL_HOURS` | `24` | discard older state and establish a fresh silent baseline |
 | `GONE_AFTER_CHECKS` | `2` | consecutive misses before a "no longer available" message |
 | `WAVE_START_ITEMS` / `WAVE_START_ALERTS` / `WAVE_WINDOW_MINUTES` / `WAVE_END_ITEMS` | `6` / `3` / `10` / `2` | wave mode tuning |
 | `FAIL_ALERT_MINUTES` | `10` | alert after this long without a successful check |
