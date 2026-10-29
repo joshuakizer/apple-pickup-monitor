@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch in-store pickup availability of iPhone 18 Pro Max at NYC Apple Stores.
+"""Watch in-store pickup availability of every US iPhone Duo configuration.
 
 Polls Apple's public pickup endpoint every INTERVAL seconds (optionally through a
 proxy) and sends a push notification (ntfy and/or Telegram) when any model becomes
@@ -22,32 +22,16 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 )
 
- # iPhone Duo - US configurations
+# iPhone Duo - US configurations
 PARTS = {
-    "MK2E4LL/A": ("256gb", "night sky"),
-    "MK2F4LL/A": ("256gb", "star white"),
-    "MK2J4LL/A": ("512gb", "night sky"),
-    "MK2K4LL/A": ("512gb", "star white"),
-    "MK2N4LL/A": ("1tb", "night sky"),
-    "MK2P4LL/A": ("1tb", "star white"),
-    "MK2T4LL/A": ("2tb", "night sky"),
-    "MK2U4LL/A": ("2tb", "star white"),
-}
-
-# Apple Stores in the five NYC boroughs.
-NYC_STORES = {
-    "R095": "Fifth Avenue",
-    "R415": "Grand Central",
-    "R250": "West 14th Street",
-    "R032": "SoHo",
-    "R654": "World Trade Center",
-    "R251": "Upper West Side",
-    "R582": "Upper East Side",
-    "R594": "Williamsburg",
-    "R715": "Downtown Brooklyn",
-    "R612": "Queens Center",
-    "R753": "The Mall at Bay Plaza",
-    "R152": "Staten Island",
+    "MK1F4LL/A": ("256gb", "night sky"),
+    "MK1E4LL/A": ("256gb", "star white"),
+    "MK1H4LL/A": ("512gb", "night sky"),
+    "MK1G4LL/A": ("512gb", "star white"),
+    "MK1L4LL/A": ("1tb", "night sky"),
+    "MK1J4LL/A": ("1tb", "star white"),
+    "MK1R4LL/A": ("2tb", "night sky"),
+    "MK1Q4LL/A": ("2tb", "star white"),
 }
 
 INTERVAL = int(os.getenv("INTERVAL", "60"))
@@ -58,10 +42,10 @@ if CAPACITIES.strip().upper() != "ALL":
     PARTS = {part: spec for part, spec in PARTS.items() if spec[0] in wanted}
     if not PARTS:
         sys.exit(f"CAPACITIES={CAPACITIES!r} matches no models")
-# Each location returns its ~12 nearest stores; 10314 is needed to reach Staten Island.
-LOCATIONS = [l.strip() for l in os.getenv("LOCATIONS", "10001,10314").split(",") if l.strip()]
+# Each location returns its ~12 nearest stores.
+LOCATIONS = [l.strip() for l in os.getenv("LOCATIONS", "33579").split(",") if l.strip()]
 # Comma-separated store numbers to watch, or "ALL" for every store returned.
-STORES = os.getenv("STORES", ",".join(NYC_STORES))
+STORES = os.getenv("STORES", "ALL")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -103,21 +87,25 @@ def product_url(part):
     
 def product_name(part):
     capacity, color = PARTS[part]
-    return f"{capacity.upper()} {color.capitalize()}"
+    return f"{capacity.upper()} {color.title()}"
 
 
 def fetch_location(location):
     params = [("pl", "true"), ("location", location)]
+    params.extend((f"parts.{index}", part) for index, part in enumerate(PARTS))
 
     url = f"{ENDPOINT}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     with APPLE_OPENER.open(req, timeout=30) as resp:
         data = json.load(resp)
-    stores = data.get("body", {}).get("stores")
-    
+    body = data.get("body") or {}
+    stores = body.get("stores")
     if stores is None:
-        raise RuntimeError(f"top={list(data)} body={list(data.get('body') or {})}")
-        
+        detail = body.get("errorMessage") or f"body keys: {sorted(body)}"
+        raise RuntimeError(f"unexpected Apple response for {location}: {detail}")
+    if not isinstance(stores, list):
+        raise RuntimeError(f"unexpected stores value for {location}: {type(stores).__name__}")
+    return stores
 
 def check():
     """Return {(store_number, part): "Store Name (zip)"} for every available combination."""
@@ -132,8 +120,8 @@ def check():
             seen_stores.add(number)
             postal_code = (store.get("address") or {}).get("postalCode")
             label = f"{store['storeName']} ({postal_code})" if postal_code else store["storeName"]
-            for part, info in store.get("partsAvailability", {}).items():
-                if info.get("pickupDisplay") == "available":
+            for part, info in (store.get("partsAvailability") or {}).items():
+                if part in PARTS and info.get("pickupDisplay") == "available":
                     available[(number, part)] = label
     # A 200 response with missing stores would silently hide stock, so treat it as a failure.
     if watched is not None:
@@ -147,21 +135,32 @@ def check():
     return available, seen_stores
 
 
+def send_ntfy(title, message, click=None, priority="high", links=None):
+    """Send one ntfy message, raising an exception if delivery fails."""
+    links = links or []
+    headers = {"Title": title, "Priority": priority, "Tags": "iphone"}
+    if click:
+        headers["Click"] = click
+    if links:
+        headers["Actions"] = "; ".join(f"view, {label}, {url}" for label, url in links[:3])
+    topic = urllib.parse.quote(NTFY_TOPIC.strip(), safe="")
+    req = urllib.request.Request(
+        f"{NTFY_SERVER.rstrip('/')}/{topic}",
+        data=message.encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        resp.read()
+
+
 def notify(title, message, click=None, priority="high", links=None):
     """links: list of (label, url) shown as buttons in ntfy (max 3) and as lines in Telegram."""
     links = links or []
     log(f"NOTIFY {title}: {message}")
     if NTFY_TOPIC:
-        headers = {"Title": title.encode("utf-8"), "Priority": priority, "Tags": "iphone"}
-        if click:
-            headers["Click"] = click
-        if links:
-            headers["Actions"] = "; ".join(f"view, {label}, {url}" for label, url in links[:3])
-        req = urllib.request.Request(
-            f"{NTFY_SERVER}/{NTFY_TOPIC}", data=message.encode("utf-8"), headers=headers, method="POST"
-        )
         try:
-            urllib.request.urlopen(req, timeout=15).read()
+            send_ntfy(title, message, click=click, priority=priority, links=links)
         except Exception as exc:
             log(f"ntfy failed: {exc}")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -269,9 +268,17 @@ def run(once=False):
             stock_alert_times = [t for t in stock_alert_times if now - t < window]
 
             if first:
-                summary = format_any(current) if current else "Nothing available right now."
-                notify("iPhone 18 Pro Max monitor started", summary, priority="low", links=buy_links(current))
-                in_wave = len(current) >= WAVE_START_ITEMS
+                if once:
+                    if current:
+                        links = buy_links(current)
+                        notify("iPhone Duo available for pickup", format_any(current),
+                               click=links[0][1], priority="urgent", links=links)
+                    else:
+                        log("one-shot check complete: nothing available right now")
+                else:
+                    summary = format_any(current) if current else "Nothing available right now."
+                    notify("iPhone Duo monitor started", summary, priority="low", links=buy_links(current))
+                    in_wave = len(current) >= WAVE_START_ITEMS
             elif in_wave:
                 if len(current) <= WAVE_END_ITEMS:
                     in_wave = False
@@ -282,14 +289,14 @@ def run(once=False):
                     notify("Restock wave is over", body, priority="default", links=buy_links(current))
             elif new and (len(current) >= WAVE_START_ITEMS or len(stock_alert_times) + 1 >= WAVE_START_ALERTS):
                 in_wave = True
-                notify("Big iPhone 18 Pro Max restock",
+                notify("Big iPhone Duo restock",
                        format_by_model(current) + "\n\nNo more alerts until it winds down.",
                        click=buy_links(current)[0][1], priority="urgent", links=buy_links(current))
             else:
                 if new:
                     stock_alert_times.append(now)
                     links = buy_links(new)
-                    notify("iPhone 18 Pro Max available for pickup", format_any(new),
+                    notify("iPhone Duo available for pickup", format_any(new),
                            click=links[0][1], priority="urgent", links=links)
                 if gone:
                     lines = [
@@ -320,5 +327,20 @@ def run(once=False):
         time.sleep(max(1, interval + random.uniform(-0.15, 0.15) * interval))
 
 
+def test_notification():
+    if not NTFY_TOPIC:
+        sys.exit("NTFY_TOPIC is not configured")
+    send_ntfy(
+        "Apple pickup monitor test",
+        "ntfy delivery is working. This is a test notification.",
+        click=product_url(next(iter(PARTS))),
+        priority="default",
+    )
+    log("ntfy test notification delivered successfully")
+
+
 if __name__ == "__main__":
-    run(once="--once" in sys.argv)
+    if "--test-notification" in sys.argv:
+        test_notification()
+    else:
+        run(once="--once" in sys.argv)
