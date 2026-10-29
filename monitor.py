@@ -24,22 +24,16 @@ USER_AGENT = (
 
 # iPhone 18 Pro Max, US models (same part number for every carrier and unlocked).
 PARTS = {
-    "MJW44LL/A": ("256gb", "black"),
-    "MJW54LL/A": ("256gb", "silver"),
-    "MJW64LL/A": ("256gb", "burgundy"),
-    "MJW74LL/A": ("256gb", "glacier"),
-    "MJW84LL/A": ("512gb", "black"),
-    "MJW94LL/A": ("512gb", "silver"),
-    "MJWA4LL/A": ("512gb", "burgundy"),
-    "MJWC4LL/A": ("512gb", "glacier"),
-    "MJWD4LL/A": ("1tb", "black"),
-    "MJWE4LL/A": ("1tb", "silver"),
-    "MJWF4LL/A": ("1tb", "burgundy"),
-    "MJWG4LL/A": ("1tb", "glacier"),
-    "MJWH4LL/A": ("2tb", "black"),
-    "MJWJ4LL/A": ("2tb", "silver"),
-    "MJWK4LL/A": ("2tb", "burgundy"),
-    "MJWL4LL/A": ("2tb", "glacier"),
+ # iPhone Duo - US configurations
+PARTS = {
+    "MK2E4LL/A": ("256gb", "night sky"),
+    "MK2F4LL/A": ("256gb", "star white"),
+    "MK2J4LL/A": ("512gb", "night sky"),
+    "MK2K4LL/A": ("512gb", "star white"),
+    "MK2N4LL/A": ("1tb", "night sky"),
+    "MK2P4LL/A": ("1tb", "star white"),
+    "MK2T4LL/A": ("2tb", "night sky"),
+    "MK2U4LL/A": ("2tb", "star white"),
 }
 
 # Apple Stores in the five NYC boroughs.
