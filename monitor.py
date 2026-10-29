@@ -22,8 +22,6 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 )
 
-# iPhone 18 Pro Max, US models (same part number for every carrier and unlocked).
-PARTS = {
  # iPhone Duo - US configurations
 PARTS = {
     "MK2E4LL/A": ("256gb", "night sky"),
