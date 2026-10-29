@@ -114,10 +114,10 @@ def fetch_location(location):
     with APPLE_OPENER.open(req, timeout=30) as resp:
         data = json.load(resp)
     stores = data.get("body", {}).get("stores")
+    
     if stores is None:
-        raise RuntimeError(f"unexpected response for {location}: {str(data)[:1200]}")
-    return stores
-
+        raise RuntimeError(f"top={list(data)} body={list(data.get('body') or {})}")
+        
 
 def check():
     """Return {(store_number, part): "Store Name (zip)"} for every available combination."""
