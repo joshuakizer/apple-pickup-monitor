@@ -1,7 +1,22 @@
 name: Apple Inventory Monitor
 
 on:
+  schedule:
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: Send a test ntfy notification instead of checking inventory
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-inventory-monitor
+  cancel-in-progress: false
 
 jobs:
   check-stock:
@@ -17,11 +32,36 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Restore inventory state
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_notification != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .state/inventory.json
+          key: apple-inventory-state-${{ github.run_id }}
+          restore-keys: |
+            apple-inventory-state-
+
       - name: Check Apple inventory
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_notification != true }}
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
-          LOCATIONS: "33579,33602,33511"
+          LOCATIONS: "33579"
           STORES: "ALL"
+          CAPACITIES: "ALL"
           STORE_TZ: "America/New_York"
         run: python3 monitor.py --once
+
+      - name: Save inventory state
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.test_notification != true) }}
+        uses: actions/cache/save@v4
+        with:
+          path: .state/inventory.json
+          key: apple-inventory-state-${{ github.run_id }}
+
+      - name: Verify ntfy delivery
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification == true }}
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
+        run: python3 monitor.py --test-notification

@@ -3,9 +3,9 @@
 Get a push notification on your phone the moment an iPhone becomes available for in-store
 pickup at a nearby Apple Store.
 
-It ships configured for the **iPhone 18 Pro Max** (16 variants) at the **12 Apple Stores in
-New York City**, but works for any product and any US area by editing two dictionaries
-(see [Adapting it](#adapting-it-to-other-models-or-cities)).
+It ships configured for all **eight US iPhone Duo configurations** (four capacities in
+Night Sky and Star White) at the stores nearest **ZIP 33579**. It can be adapted to another
+product or US area by editing the part-number map and location settings.
 
 - One Python file, standard library only. No browser, no cookies, no login.
 - Alerts via [ntfy](https://ntfy.sh) (free, no account) and/or Telegram, with "Buy" buttons.
@@ -22,6 +22,7 @@ cp .env.example .env            # set NTFY_TOPIC to a long random name
 set -a; . ./.env; set +a
 python3 monitor.py --once       # single check, prints what's available
 python3 monitor.py              # keep polling
+python3 monitor.py --test-notification  # verify ntfy delivery
 ```
 
 Install the ntfy app ([iOS](https://apps.apple.com/app/ntfy/id1625396347) /
@@ -41,7 +42,7 @@ Returns the ~12 stores nearest to `<zip>`, each with `partsAvailability[<part>].
 
 - `/shop/fulfillment-messages`, the endpoint most older scripts use, now returns HTTP 541. Don't use it.
 - `LOCATIONS` lists the zips to query; results are filtered to `STORES`.
-  `10001` covers every NYC store except Staten Island, which needs `10314` too.
+  The default is `33579`.
 - An alert fires when a (store, model) pair goes from unavailable to available. Once it has been
   missing for 2 consecutive checks, a "no longer available" message says how long it lasted.
 - **Wave mode:** if 6+ pairs are available at once, or 3 alerts fire within 10 min, you get one
@@ -63,9 +64,27 @@ its rotating endpoint: the username needs the `-rotate` suffix, otherwise you ge
 PROXY_URL=http://<user>-rotate:<pass>@p.webshare.io:80/
 ```
 
-**Bandwidth:** Apple doesn't compress this response, so each zip costs ~145 KB per check
-(16 models: ~230 KB). One zip every 30 s is ~420 MB/day. To stretch a small allowance, poll
-less at night with `NIGHT_INTERVAL` + `ACTIVE_HOURS`, and watch fewer models with `CAPACITIES`.
+**Bandwidth:** response size varies with the number of configurations and stores. To stretch a
+small proxy allowance, poll less at night with `NIGHT_INTERVAL` + `ACTIVE_HOURS`, and watch
+fewer models with `CAPACITIES`.
+
+## Run with GitHub Actions
+
+The workflow runs every five minutes and can also be started manually. Add the existing ntfy
+topic as the repository secret `NTFY_TOPIC`; add `PROXY_URL` only if Apple blocks GitHub's
+datacenter IP. The workflow reads these secrets but never replaces them.
+
+To verify delivery, open **Actions → Apple Inventory Monitor → Run workflow**, enable
+**Send a test ntfy notification instead of checking inventory**, and run it. A successful run
+confirms that the saved topic and ntfy delivery path work without printing the topic value.
+
+Scheduled runs restore the latest inventory snapshot from the Actions cache and alert only for
+new `(store, configuration)` pairs. A successful out-of-stock check removes a pair so a later
+restock can alert again. Failed checks exit nonzero and do not replace the last good snapshot.
+
+Missing, malformed, or older-than-24-hours state establishes a silent baseline. This prevents a
+cache loss from resending every currently available item, but it also means stock already present
+during that baseline run will not alert until it first goes out of stock and later returns.
 
 ## Deploy to Fly.io
 
@@ -101,8 +120,10 @@ All settings are environment variables.
 | `ACTIVE_HOURS` | `0-24` | `start-end` hours in `STORE_TZ`, e.g. `8-22` |
 | `STORE_TZ` | `America/New_York` | time zone for `ACTIVE_HOURS` |
 | `CAPACITIES` | `ALL` | e.g. `256gb,512gb` |
-| `LOCATIONS` | `10001,10314` | zips to query |
-| `STORES` | all NYC stores | comma-separated store numbers, or `ALL` for every store returned |
+| `LOCATIONS` | `33579` | ZIP codes to query |
+| `STORES` | `ALL` | comma-separated store numbers, or `ALL` for every store returned |
+| `STATE_FILE` | `.state/inventory.json` | persisted snapshot used by `--once` runs |
+| `STATE_TTL_HOURS` | `24` | discard older state and establish a fresh silent baseline |
 | `GONE_AFTER_CHECKS` | `2` | consecutive misses before a "no longer available" message |
 | `WAVE_START_ITEMS` / `WAVE_START_ALERTS` / `WAVE_WINDOW_MINUTES` / `WAVE_END_ITEMS` | `6` / `3` / `10` / `2` | wave mode tuning |
 | `FAIL_ALERT_MINUTES` | `10` | alert after this long without a successful check |
@@ -110,14 +131,14 @@ All settings are environment variables.
 
 ## Adapting it to other models or cities
 
-Edit two dictionaries at the top of `monitor.py`:
+Edit the `PARTS` dictionary at the top of `monitor.py` and set the location variables:
 
 - **`PARTS`** maps Apple part numbers to `(capacity, color)`. To find them, open the product's buy
   page on apple.com, pick a model, click "Check availability" for pickup, and look for the
   `pickup-message` request in your browser's DevTools Network tab: the part number is in
   `parts.0` (e.g. `MJW44LL/A`). US part numbers are the same for every carrier and unlocked.
   Also update `product_url()`, which builds the "Buy" link.
-- **`NYC_STORES`** maps store numbers to names. List the stores near a zip with:
+- List the stores near a ZIP with:
 
   ```sh
   curl -s 'https://www.apple.com/shop/retail/pickup-message?pl=true&location=<zip>&parts.0=MJW44LL/A' \
