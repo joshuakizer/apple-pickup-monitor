@@ -108,7 +108,7 @@ def product_name(part):
 
 def fetch_location(location):
     params = [("pl", "true"), ("location", location)]
-    params += [(f"parts.{i}", part) for i, part in enumerate(PARTS)]
+            raise RuntimeError(f"unexpected response for {location}: {str(data)[:1500]}")
     url = f"{ENDPOINT}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     with APPLE_OPENER.open(req, timeout=30) as resp:
