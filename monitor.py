@@ -115,7 +115,7 @@ def fetch_location(location):
         data = json.load(resp)
     stores = data.get("body", {}).get("stores")
     if stores is None:
-        raise RuntimeError(f"unexpected response for {location}: {str(data)[:200]}")
+        raise RuntimeError(f"unexpected response for {location}: {str(data)[:1200]}")
     return stores
 
 
